@@ -96,6 +96,31 @@
             text-align: center;
             backdrop-filter: blur(10px);
         }
+        #mouse-look-btn {
+            position: absolute;
+            top: 100px;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 12px 30px;
+            background: linear-gradient(135deg, #d4af37, #8b7355);
+            color: white;
+            border: none;
+            border-radius: 25px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            pointer-events: all;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            transition: all 0.3s;
+            font-family: 'Georgia', serif;
+        }
+        #mouse-look-btn:hover {
+            transform: translateX(-50%) scale(1.05);
+            box-shadow: 0 6px 16px rgba(0,0,0,0.4);
+        }
+        #mouse-look-btn.active {
+            background: linear-gradient(135deg, #8b7355, #d4af37);
+        }
         #crosshair {
             position: absolute;
             top: 50%;
@@ -106,6 +131,7 @@
             background: white;
             border-radius: 50%;
             box-shadow: 0 0 10px rgba(255,255,255,0.8);
+            transition: all 0.2s ease;
         }
         
         /* Artwork Modal */
@@ -367,9 +393,12 @@
     <!-- HUD -->
     <div id="hud" style="display: none;">
         <div id="instructions">
-            <strong>WASD</strong> or <strong>Arrow Keys</strong> to move • <strong>Mouse</strong> to look around<br>
-            <strong>Click</strong> on paintings to view details • <strong>ESC</strong> to exit viewing
+            <strong>WASD</strong> or <strong>Arrow Keys</strong> to move<br>
+            Aim crosshair at paintings and <strong>Click</strong> to view details • <strong>ESC</strong> to exit
         </div>
+        <button id="mouse-look-btn" onclick="toggleMouseLook()">
+            Enable Mouse Look
+        </button>
         <div id="crosshair"></div>
     </div>
     
@@ -480,6 +509,7 @@
         let velocity = new THREE.Vector3();
         let direction = new THREE.Vector3();
         const clock = new THREE.Clock();
+        let hoveredPainting = null;
         
         function enterMuseum() {
             document.getElementById('landing').classList.add('hidden');
@@ -643,6 +673,16 @@
                 frame.add(canvas);
             });
             
+            // Invisible hitbox (larger for easier clicking)
+            const hitboxGeometry = new THREE.PlaneGeometry(2.5, 3);
+            const hitboxMaterial = new THREE.MeshBasicMaterial({ 
+                visible: false,
+                side: THREE.DoubleSide
+            });
+            const hitbox = new THREE.Mesh(hitboxGeometry, hitboxMaterial);
+            hitbox.position.z = 0.1;
+            frame.add(hitbox);
+            
             frame.position.set(x, y, z);
             frame.rotation.y = rotationY;
             frame.userData = { artwork: artwork };
@@ -671,11 +711,25 @@
                 }
             });
             
-            renderer.domElement.addEventListener('click', () => {
-                if (document.getElementById('artwork-modal').classList.contains('show')) return;
-                if (document.querySelector('.muse-chat').classList.contains('show')) return;
-                renderer.domElement.requestPointerLock();
+            // Listen for pointer lock changes
+            document.addEventListener('pointerlockchange', () => {
+                const btn = document.getElementById('mouse-look-btn');
+                if (document.pointerLockElement === renderer.domElement) {
+                    btn.textContent = 'Disable Mouse Look';
+                    btn.classList.add('active');
+                } else {
+                    btn.textContent = 'Enable Mouse Look';
+                    btn.classList.remove('active');
+                }
             });
+        }
+        
+        function toggleMouseLook() {
+            if (document.pointerLockElement === renderer.domElement) {
+                document.exitPointerLock();
+            } else {
+                renderer.domElement.requestPointerLock();
+            }
         }
         
         function onKeyDown(event) {
@@ -697,7 +751,11 @@
                     moveRight = true;
                     break;
                 case 'Escape':
-                    closeArtwork();
+                    if (document.getElementById('artwork-modal').classList.contains('show')) {
+                        closeArtwork();
+                    } else if (document.pointerLockElement) {
+                        document.exitPointerLock();
+                    }
                     break;
             }
         }
@@ -730,17 +788,10 @@
                 return;
             }
             
-            // Check if clicking on a painting
-            raycaster.setFromCamera(new THREE.Vector2(0, 0), camera); // Center of screen
-            const intersects = raycaster.intersectObjects(paintings, true);
-            
-            if (intersects.length > 0) {
-                let painting = intersects[0].object;
-                while (painting && !painting.userData.artwork) {
-                    painting = painting.parent;
-                }
-                if (painting && painting.userData.artwork) {
-                    showArtwork(painting.userData.artwork);
+            // Only check for painting clicks if pointer is already locked
+            if (document.pointerLockElement === renderer.domElement) {
+                if (hoveredPainting && hoveredPainting.userData.artwork) {
+                    showArtwork(hoveredPainting.userData.artwork);
                 }
             }
         }
@@ -799,6 +850,49 @@
             // Boundaries
             camera.position.x = Math.max(-13, Math.min(13, camera.position.x));
             camera.position.z = Math.max(-8, Math.min(8, camera.position.z));
+            
+            // Check for painting hover (when pointer locked)
+            if (document.pointerLockElement === renderer.domElement) {
+                raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
+                const intersects = raycaster.intersectObjects(paintings, true);
+                
+                // Remove previous hover effect
+                if (hoveredPainting) {
+                    hoveredPainting.children.forEach(child => {
+                        if (child.material && child.material.emissive) {
+                            child.material.emissive.setHex(0x000000);
+                        }
+                    });
+                    hoveredPainting = null;
+                }
+                
+                // Add hover effect to current painting
+                if (intersects.length > 0) {
+                    let painting = intersects[0].object;
+                    while (painting && !painting.userData.artwork) {
+                        painting = painting.parent;
+                    }
+                    if (painting && painting.userData.artwork) {
+                        hoveredPainting = painting;
+                        painting.children.forEach(child => {
+                            if (child.material && child.material.emissive) {
+                                child.material.emissive.setHex(0x333333);
+                            }
+                        });
+                        // Change crosshair to gold when hovering
+                        document.getElementById('crosshair').style.background = '#d4af37';
+                        document.getElementById('crosshair').style.boxShadow = '0 0 15px rgba(212, 175, 55, 0.8)';
+                        document.getElementById('crosshair').style.width = '8px';
+                        document.getElementById('crosshair').style.height = '8px';
+                    }
+                } else {
+                    // Reset crosshair
+                    document.getElementById('crosshair').style.background = 'white';
+                    document.getElementById('crosshair').style.boxShadow = '0 0 10px rgba(255,255,255,0.8)';
+                    document.getElementById('crosshair').style.width = '4px';
+                    document.getElementById('crosshair').style.height = '4px';
+                }
+            }
             
             renderer.render(scene, camera);
         }
